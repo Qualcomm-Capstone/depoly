@@ -1,0 +1,34 @@
+# ===========================================
+# Traefik 정적 설정
+# ===========================================
+# IP 모드 / 도메인 모드 공용
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+api:
+  dashboard: true
+  insecure: false
+
+log:
+  level: INFO
+
+accessLog: {}
+
+# file provider만 사용 (host 모드에서는 docker provider 불가)
+providers:
+  file:
+    filename: "/etc/traefik/dynamic_conf.yml"
+    watch: true
+
+# SSL 인증서 (도메인 모드에서만 사용됨, IP 모드에서는 무시)
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: placeholder@example.com
+      storage: /etc/traefik/certs/acme.json
+      httpChallenge:
+        entryPoint: web

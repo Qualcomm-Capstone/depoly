@@ -1,0 +1,42 @@
+# ===========================================
+# Prometheus 설정 (envsubst 템플릿)
+# ===========================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "django"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["${APP_HOST}:8000"]
+
+  - job_name: "otel-collector"
+    static_configs:
+      - targets: ["localhost:8889"]
+
+  - job_name: "rabbitmq"
+    static_configs:
+      - targets: ["${MQ_HOST}:15692"]
+
+  - job_name: "mysql"
+    static_configs:
+      - targets: ["${DB_HOST}:9104"]
+
+  - job_name: "celery"
+    static_configs:
+      - targets: ["localhost:9808"]
+
+  - job_name: "cadvisor"
+    static_configs:
+      - targets:
+          - "${DB_HOST}:8080"
+          - "${MQ_HOST}:8080"
+          - "${APP_HOST}:8080"
+          - "${OCR_HOST}:8080"
+          - "${ALERT_HOST}:8080"
+          - "localhost:8080"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance

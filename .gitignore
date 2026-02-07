@@ -1,3 +1,11 @@
 .idea
 *.env
+!*.env.example
 *.log
+config/traefik/dynamic_conf.yml
+config/traefik/acme.json
+config/traefik/certs/
+config/monitoring/prometheus/prometheus.yml
+config/monitoring/promtail/promtail-config.yml
+config/monitoring/mysqld-exporter/.my.cnf
+config/credentials/

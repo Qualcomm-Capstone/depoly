@@ -1,0 +1,89 @@
+# speedcam-mon 인스턴스에 배포
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.98.0
+    container_name: speedcam-otel-collector
+    restart: always
+    network_mode: host
+    volumes:
+      - ../config/monitoring/otel-collector/otel-collector-config.yml:/etc/otel-collector-config.yml:ro
+    command: ["--config", "/etc/otel-collector-config.yml"]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: speedcam-jaeger
+    restart: always
+    network_mode: host
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: speedcam-prometheus
+    restart: always
+    network_mode: host
+    volumes:
+      - ../config/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-remote-write-receiver"
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: speedcam-grafana
+    restart: always
+    network_mode: host
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ../config/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+
+  loki:
+    image: grafana/loki:2.9.6
+    container_name: speedcam-loki
+    restart: always
+    network_mode: host
+    volumes:
+      - ../config/monitoring/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+
+  promtail:
+    image: grafana/promtail:2.9.6
+    container_name: speedcam-promtail
+    restart: always
+    network_mode: host
+    volumes:
+      - ../config/monitoring/promtail/promtail-config.mon.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/config.yml
+
+  celery-exporter:
+    image: danihodovic/celery-exporter:0.10.3
+    container_name: speedcam-celery-exporter
+    restart: always
+    network_mode: host
+    environment:
+      CE_BROKER_URL: "amqp://sa:${RABBITMQ_PASSWORD}@${MQ_HOST}:5672//"
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: speedcam-cadvisor
+    restart: always
+    network_mode: host
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
