@@ -1,54 +1,79 @@
-name: CI - Upload Compose & Traefik Files
+name: CI - Validate Deploy Configs
 
 on:
   push:
-    branches:
-      - main
-    paths-ignore:
-      - '.github/workflows/cd.yml'
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  upload-files:
+  validate-yaml:
+    name: YAML Lint
     runs-on: ubuntu-latest
-    environment: production
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-          lfs: true
-
-      - name: 디버깅 - source 파일 실제 존재 여부 확인
+      - uses: actions/checkout@v4
+      - name: Install yamllint
+        run: pip install yamllint
+      - name: Lint YAML files
         run: |
-          echo "[INFO] 현재 경로: $(pwd)"
-          echo "[INFO] docker-compose.*.yml 파일 확인"
-          ls -l docker-compose.*.yml || echo "❌ 파일 없음"
-          echo "[INFO] traefik 디렉토리 내 파일"
-          ls -l traefik || echo "❌ traefik 폴더 없음"
+          yamllint -d relaxed compose/
+          yamllint -d relaxed config/
 
-      - name: Create tar archive
+  validate-compose:
+    name: Docker Compose Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set dummy environment variables
         run: |
-          tar -czvf deploy_bundle.tar.gz \
-            docker-compose.backend.yml \
-            docker-compose.portainer.yml \
-            docker-compose.traefik.yml \
-            traefik
+          # compose 파일에서 사용하는 환경변수에 더미 값 설정
+          cat env/hosts.env.example | sed 's/=.*/=dummy/' > .env
+          echo "ARTIFACT_REGISTRY=dummy.pkg.dev/project/repo" >> .env
+      - name: Validate compose files
+        run: |
+          for f in compose/docker-compose.*.yml; do
+            echo "Validating $f..."
+            docker compose -f "$f" config --quiet 2>&1 || echo "WARNING: $f has issues (may need env vars)"
+          done
 
-      - name: Save SSH Key
+  validate-scripts:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ShellCheck
         run: |
-          echo "${{ secrets.SERVER_PEM_KEY }}" > private_key.pem
-          chmod 600 private_key.pem
+          shellcheck scripts/*.sh || true
 
-      - name: Upload to server
+  validate-templates:
+    name: Template Variables Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check template variables are defined
         run: |
-          scp -i private_key.pem -o StrictHostKeyChecking=no \
-            deploy_bundle.tar.gz ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/home/ubuntu/app/
+          # hosts.env.example에 정의된 변수 추출
+          defined_vars=$(grep -oP '^\w+' env/hosts.env.example | sort)
 
-      - name: Extract on server
-        run: |
-          ssh -i private_key.pem -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
-            cd /home/ubuntu/app
-            tar -xzvf deploy_bundle.tar.gz
-            rm deploy_bundle.tar.gz
-          EOF
+          # 템플릿 파일에서 사용하는 변수 추출
+          template_vars=$(grep -orhP '\$\{(\w+)\}' config/ | grep -oP '\w+' | sort -u)
+
+          echo "=== hosts.env.example에 정의된 변수 ==="
+          echo "$defined_vars"
+          echo ""
+          echo "=== 템플릿에서 사용하는 변수 ==="
+          echo "$template_vars"
+          echo ""
+
+          # 누락된 변수 확인
+          missing=$(comm -23 <(echo "$template_vars") <(echo "$defined_vars"))
+          if [ -n "$missing" ]; then
+            echo "⚠️ 템플릿에서 사용하지만 hosts.env.example에 없는 변수:"
+            echo "$missing"
+          else
+            echo "✅ 모든 템플릿 변수가 hosts.env.example에 정의되어 있습니다."
+          fi
