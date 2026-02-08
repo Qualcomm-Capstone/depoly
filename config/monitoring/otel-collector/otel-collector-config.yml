@@ -22,7 +22,7 @@ processors:
 
 exporters:
   otlp/jaeger:
-    endpoint: localhost:4317
+    endpoint: localhost:4320
     tls:
       insecure: true
   prometheus:
