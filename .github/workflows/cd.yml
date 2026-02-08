@@ -1,70 +1,108 @@
-name: CD - Deploy to Server via SSH
+name: CD - Deploy to GCE Instances
 
 on:
-  workflow_dispatch:  # ✅ 수동 실행 지원
-  workflow_run:
-    workflows: ["CI - Upload Compose & Traefik Files"]  # CI 워크플로우 이름
-    types:
-      - completed
+  repository_dispatch:
+    types: [deploy-backend]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Docker image tag to deploy (default: latest)"
+        required: false
+        default: "latest"
+      target:
+        description: "Target instance (all/app/ocr/alert)"
+        required: false
+        default: "all"
+
+concurrency:
+  group: cd-deploy
+  cancel-in-progress: false  # 배포 중 취소 방지
 
 jobs:
   deploy:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    name: Deploy ${{ matrix.instance.name }}
     runs-on: ubuntu-latest
     environment: production
 
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        instance:
+          - { name: app, compose: docker-compose.app.yml }
+          - { name: ocr, compose: docker-compose.ocr.yml }
+          - { name: alert, compose: docker-compose.alert.yml }
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Check target filter
+        id: check
+        run: |
+          TARGET="${{ github.event.inputs.target || 'all' }}"
+          CURRENT="${{ matrix.instance.name }}"
+          if [ "$TARGET" != "all" ] && [ "$TARGET" != "$CURRENT" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "⏭️ Skipping $CURRENT (target: $TARGET)"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Connect & Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.skip != 'true'
+
+      - name: Authenticate to Google Cloud
+        if: steps.check.outputs.skip != 'true'
+        uses: google-github-actions/auth@v2
         with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_PEM_KEY }}
-          script: |
-            export SECRET_KEY="${{ secrets.SECRET_KEY }}"
-            export DJANGO_SETTINGS_MODULE="${{ secrets.DJANGO_SETTINGS_MODULE }}"
-            
-            export MYSQL_USER="${{ secrets.MYSQL_USER }}"
-            export MYSQL_PASSWORD="${{ secrets.MYSQL_PASSWORD }}"
-            export MYSQL_DATABASE="${{ secrets.MYSQL_DATABASE }}"
-            export MYSQL_ROOT_PASSWORD="${{ secrets.MYSQL_ROOT_PASSWORD }}"
-            
-            export AWS_ACCESS_KEY="${{ secrets.AWS_ACCESS_KEY }}"
-            export AWS_SECRET_KEY="${{ secrets.AWS_SECRET_KEY }}"
-            export AWS_S3_BUCKET_NAME="${{ secrets.AWS_S3_BUCKET_NAME }}"
-            export AWS_S3_REGION="${{ secrets.AWS_S3_REGION }}"
-            export GOOGLE_APPLICATION_CREDENTIALS="${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}"
-            
-            export RABBITMQ_USER="${{ secrets.RABBITMQ_USER }}"
-            export RABBITMQ_PASSWORD="${{ secrets.RABBITMQ_PASSWORD }}"
-            export DOCKER_USERNAME="${{ secrets.DOCKER_USERNAME }}"
-            export DOCKER_IMAGE_NAME="${{ secrets.DOCKER_IMAGE_NAME }}"
-            export DOCKER_CELERY_NAME="${{ secrets.DOCKER_CELERY_NAME }}"
-            
-            export TRAEFIK_DASHBOARD_AUTH="${{ secrets.TRAEFIK_DASHBOARD_AUTH }}"
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-            cd /home/ubuntu/app
-            
-            docker compose \
-              -f docker-compose.backend.yml \
-              -f docker-compose.portainer.yml \
-              -f docker-compose.traefik.yml \
-              pull
-      
-            docker compose \
-              -f docker-compose.backend.yml \
-              -f docker-compose.portainer.yml \
-              -f docker-compose.traefik.yml \
-              down
-            
-            docker image prune -f
-            docker volume prune -f
-      
-            docker compose \
-              -f docker-compose.backend.yml \
-              -f docker-compose.portainer.yml \
-              -f docker-compose.traefik.yml \
-              up -d --build
+      - name: Set up Cloud SDK
+        if: steps.check.outputs.skip != 'true'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get instance name
+        if: steps.check.outputs.skip != 'true'
+        id: instance
+        run: |
+          ROLE="${{ matrix.instance.name }}"
+          case "$ROLE" in
+            app) INSTANCE="${{ secrets.APP_INSTANCE }}" ;;
+            ocr) INSTANCE="${{ secrets.OCR_INSTANCE }}" ;;
+            alert) INSTANCE="${{ secrets.ALERT_INSTANCE }}" ;;
+          esac
+          echo "name=$INSTANCE" >> $GITHUB_OUTPUT
+          echo "🎯 Deploying to $INSTANCE"
+
+      - name: Sync deploy configs
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          gcloud compute scp --recurse \
+            ./compose ./config ./env ./scripts \
+            ${{ steps.instance.outputs.name }}:~/depoly/ \
+            --zone=${{ secrets.GCE_ZONE }} \
+            --quiet
+
+      - name: Deploy via SSH
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          gcloud compute ssh ${{ steps.instance.outputs.name }} \
+            --zone=${{ secrets.GCE_ZONE }} \
+            --quiet \
+            --command="
+              cd ~/depoly &&
+              gcloud auth configure-docker ${{ secrets.AR_REGION }}-docker.pkg.dev --quiet &&
+              source env/hosts.env &&
+              docker compose -f compose/${{ matrix.instance.compose }} pull &&
+              docker compose -f compose/${{ matrix.instance.compose }} up -d &&
+              echo '=== Container Status ===' &&
+              docker compose -f compose/${{ matrix.instance.compose }} ps
+            "
+
+      - name: Health check
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          echo "⏳ Waiting 15s for services to start..."
+          sleep 15
+          gcloud compute ssh ${{ steps.instance.outputs.name }} \
+            --zone=${{ secrets.GCE_ZONE }} \
+            --quiet \
+            --command="docker compose -f ~/depoly/compose/${{ matrix.instance.compose }} ps --format 'table {{.Name}}\t{{.Status}}'"

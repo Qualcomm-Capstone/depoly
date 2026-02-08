@@ -1,0 +1,48 @@
+# ===========================================
+# Traefik 동적 설정 -- IP 모드 (도메인 없음)
+# ===========================================
+# 외부 트래픽: http://<APP_외부IP> -> Django API
+# 관리 도구: VPC 내부 IP로 직접 접근
+#   - Flower:   http://<APP_HOST>:5555
+#   - Grafana:  http://<MON_HOST>:3000
+#   - RabbitMQ: http://<MQ_HOST>:15672
+
+http:
+  routers:
+    # 모든 HTTP 트래픽 -> Django API
+    api:
+      rule: "PathPrefix(`/`)"
+      entryPoints:
+        - web
+      service: api
+      middlewares:
+        - cors
+        - rate-limit
+
+  services:
+    api:
+      loadBalancer:
+        servers:
+          - url: "http://localhost:8000"
+
+  middlewares:
+    cors:
+      headers:
+        accessControlAllowOriginList:
+          - "*"
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        accessControlAllowHeaders:
+          - "*"
+        accessControlAllowCredentials: true
+        addVaryHeader: true
+
+    rate-limit:
+      rateLimit:
+        average: 50
+        burst: 100

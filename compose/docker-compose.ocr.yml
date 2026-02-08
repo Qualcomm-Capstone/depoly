@@ -1,0 +1,33 @@
+# speedcam-ocr 인스턴스에 배포
+services:
+  ocr-worker:
+    image: ${ARTIFACT_REGISTRY}/speedcam-ocr:latest
+    container_name: speedcam-ocr
+    restart: always
+    network_mode: host
+    env_file:
+      - ../env/backend.env
+    volumes:
+      - ../config/credentials:/app/credentials:ro
+
+  promtail:
+    image: grafana/promtail:2.9.6
+    container_name: speedcam-promtail
+    restart: always
+    network_mode: host
+    volumes:
+      - ../config/monitoring/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/config.yml
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: speedcam-cadvisor
+    restart: always
+    network_mode: host
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro

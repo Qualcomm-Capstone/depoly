@@ -1,0 +1,131 @@
+# ===========================================
+# Traefik 동적 설정 -- 도메인 모드 (envsubst 템플릿)
+# ===========================================
+# 생성: scripts/setup-env.sh 실행 시 자동 생성
+# 접근:
+#   - https://api.${DOMAIN}      -> Django API
+#   - https://flower.${DOMAIN}   -> Flower
+#   - https://grafana.${DOMAIN}  -> Grafana
+#   - https://rabbitmq.${DOMAIN} -> RabbitMQ UI
+#   - https://traefik.${DOMAIN}  -> Traefik Dashboard
+
+http:
+  routers:
+    # HTTP -> HTTPS 리다이렉트
+    http-redirect:
+      rule: "PathPrefix(`/`)"
+      entryPoints:
+        - web
+      middlewares:
+        - redirect-to-https
+      service: noop@internal
+      priority: 1
+
+    # Django API
+    api:
+      rule: "Host(`api.${DOMAIN}`)"
+      entryPoints:
+        - websecure
+      service: api
+      tls:
+        certResolver: letsencrypt
+      middlewares:
+        - cors
+        - rate-limit
+
+    # Flower (Celery 모니터링)
+    flower:
+      rule: "Host(`flower.${DOMAIN}`)"
+      entryPoints:
+        - websecure
+      service: flower
+      tls:
+        certResolver: letsencrypt
+      middlewares:
+        - admin-auth
+
+    # Grafana
+    grafana:
+      rule: "Host(`grafana.${DOMAIN}`)"
+      entryPoints:
+        - websecure
+      service: grafana
+      tls:
+        certResolver: letsencrypt
+
+    # RabbitMQ Management UI
+    rabbitmq:
+      rule: "Host(`rabbitmq.${DOMAIN}`)"
+      entryPoints:
+        - websecure
+      service: rabbitmq
+      tls:
+        certResolver: letsencrypt
+      middlewares:
+        - admin-auth
+
+    # Traefik Dashboard
+    traefik-dashboard:
+      rule: "Host(`traefik.${DOMAIN}`)"
+      entryPoints:
+        - websecure
+      service: api@internal
+      tls:
+        certResolver: letsencrypt
+      middlewares:
+        - admin-auth
+
+  services:
+    api:
+      loadBalancer:
+        servers:
+          - url: "http://localhost:8000"
+
+    flower:
+      loadBalancer:
+        servers:
+          - url: "http://localhost:5555"
+
+    grafana:
+      loadBalancer:
+        servers:
+          - url: "http://${MON_HOST}:3000"
+
+    rabbitmq:
+      loadBalancer:
+        servers:
+          - url: "http://${MQ_HOST}:15672"
+
+  middlewares:
+    redirect-to-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+    cors:
+      headers:
+        accessControlAllowOriginList:
+          - "https://${DOMAIN}"
+          - "https://www.${DOMAIN}"
+          - "https://api.${DOMAIN}"
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        accessControlAllowHeaders:
+          - "*"
+        accessControlAllowCredentials: true
+        addVaryHeader: true
+
+    rate-limit:
+      rateLimit:
+        average: 50
+        burst: 100
+
+    admin-auth:
+      basicAuth:
+        users:
+          - "${TRAEFIK_AUTH_USER}"
